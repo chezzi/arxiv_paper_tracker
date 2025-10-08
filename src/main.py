@@ -15,6 +15,13 @@ from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 from jinja2 import Template
 
+import urllib.request
+import feedparser
+
+
+
+
+
 # 加载环境变量
 load_dotenv()
 
@@ -91,6 +98,74 @@ def get_recent_papers(categories, max_results=MAX_PAPERS):
     
     logger.info(f"找到{len(results)}篇符合条件的论文")
     return results
+
+def fallback_arxiv_search(query, max_results):
+    """降级方案：直接使用ArXiv API"""
+    base_url = 'https://export.arxiv.org/api/query?'
+    
+    # 构建查询参数:cite[6]
+    params = {
+        'search_query': query,
+        'start': 0,
+        'max_results': max_results,
+        'sortBy': 'submittedDate',
+        'sortOrder': 'descending'
+    }
+    
+    query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
+    url = base_url + query_string
+    
+    try:
+        logger.info(f"使用降级方案请求: {url}")
+        # 添加用户代理头避免被拒绝:cite[3]
+        headers = {'User-Agent': 'Mozilla/5.0 (arxiv-paper-tracker)'}
+        req = urllib.request.Request(url, headers=headers)
+        
+        with urllib.request.urlopen(req, timeout=30) as response:
+            data = response.read().decode('utf-8')
+        
+        # 解析Atom feed:cite[6]
+        feed = feedparser.parse(data)
+        results = []
+        
+        for entry in feed.entries:
+            # 将feed条目转换为类似arxiv.Result的对象
+            paper = type('Paper', (), {})()
+            paper.title = entry.title
+            paper.authors = [type('Author', (), {'name': author.name})() for author in entry.authors]
+            paper.categories = [tag.term for tag in entry.tags] if hasattr(entry, 'tags') else []
+            paper.published = datetime.datetime(*entry.published_parsed[:6])
+            paper.entry_id = entry.id
+            paper.pdf_url = None
+            
+            # 查找PDF链接
+            for link in entry.links:
+                if link.rel == 'alternate' and link.type == 'text/html':
+                    paper.entry_id = link.href
+                elif link.title == 'pdf':
+                    paper.pdf_url = link.href
+            
+            # 添加下载PDF的方法
+            def download_pdf(self, filename=None):
+                if self.pdf_url and filename:
+                    urllib.request.urlretrieve(self.pdf_url, filename)
+                    return filename
+                return None
+            
+            paper.download_pdf = download_pdf.__get__(paper)
+            paper.get_short_id = lambda: entry.id.split('/')[-1]
+            
+            results.append(paper)
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"降级方案也失败了: {str(e)}")
+        return []
+
+
+
+
 
 def download_paper(paper, output_dir):
     """将论文PDF下载到指定目录"""
