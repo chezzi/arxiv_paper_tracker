@@ -51,7 +51,7 @@ def get_recent_papers(categories, max_results=MAX_PAPERS):
     """获取最近5天内发布的指定类别的论文"""
     # 计算最近5天的日期范围
     today = datetime.datetime.now()
-    five_days_ago = today - datetime.timedelta(days=2)
+    five_days_ago = today - datetime.timedelta(days=5)
     
     # 格式化ArXiv查询的日期
     start_date = five_days_ago.strftime('%Y%m%d')
@@ -63,7 +63,13 @@ def get_recent_papers(categories, max_results=MAX_PAPERS):
     query = f"({category_query}) AND {date_range}"
     
     logger.info(f"正在搜索论文，查询条件: {query}")
-    
+
+    # 创建自定义客户端，强制使用HTTPS
+    client = arxiv.Client(
+        page_size=100,
+        delay_seconds=3,
+        num_retries=3
+    )
     # 搜索ArXiv
     search = arxiv.Search(
         query=query,
@@ -72,7 +78,17 @@ def get_recent_papers(categories, max_results=MAX_PAPERS):
         sort_order=arxiv.SortOrder.Descending
     )
     
-    results = list(search.results())
+    results = []
+    try:
+        for result in client.results(search):
+            results.append(result)
+            if len(results) >= max_results:
+                break
+    except Exception as e:
+        logger.error(f"获取论文时发生错误: {str(e)}")
+        # 降级方案：尝试使用直接请求
+        results = fallback_arxiv_search(query, max_results)
+    
     logger.info(f"找到{len(results)}篇符合条件的论文")
     return results
 
